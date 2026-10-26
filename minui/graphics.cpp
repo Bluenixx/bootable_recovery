@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <cmath>
 #include <memory>
 
 #include <android-base/properties.h>
@@ -309,6 +310,79 @@ void gr_fill(int x1, int y1, int x2, int y2) {
       incr_y(&p, row_pixels);
     }
   }
+}
+
+// Blends gr_current onto the pixel at (x, y) with the given 0-255 coverage. Coordinates are in the
+// logical (rotation-aware) space and must already include the overscan offset.
+static inline void BlendCoverage(int x, int y, uint8_t coverage) {
+  if (outside(x, y)) return;
+  uint32_t a = coverage;
+  uint8_t base = get_alpha(gr_current);
+  if (base < 255) a = a * base / 255;
+  if (a == 0) return;
+  int row_pixels = gr_draw->row_bytes / gr_draw->pixel_bytes;
+  uint32_t* p = PixelAt(gr_draw, x, y, row_pixels);
+  *p = pixel_blend(static_cast<uint8_t>(a), *p);
+}
+
+void gr_fill_round(int x1, int y1, int x2, int y2, int radius) {
+  md3::FillRoundRect(x1 + overscan_offset_x, y1 + overscan_offset_y, x2 + overscan_offset_x,
+                     y2 + overscan_offset_y, radius, BlendCoverage);
+}
+
+void gr_fill_circle(int cx, int cy, int radius) {
+  gr_fill_round(cx - radius, cy - radius, cx + radius, cy + radius, radius);
+}
+
+void gr_fill_shape(int cx, int cy, int radius, const GRShapeHarmonic* harmonics, int count) {
+  md3::FillShape(cx + overscan_offset_x, cy + overscan_offset_y, radius, harmonics, count,
+                 BlendCoverage);
+}
+
+void gr_fill_wave(int x1, int x2, int cy, float amplitude, float wavelength, float phase,
+                  int thickness) {
+  md3::FillWave(x1 + overscan_offset_x, x2 + overscan_offset_x, cy + overscan_offset_y, amplitude,
+                wavelength, phase, thickness, BlendCoverage);
+}
+
+int gr_measure_scaled(const GRFont* font, const char* s, float scale) {
+  if (font == nullptr) return -1;
+  return static_cast<int>(std::lround(font->char_width * scale)) * static_cast<int>(strlen(s));
+}
+
+int gr_text_scaled(const GRFont* font, int x, int y, const char* s, bool bold, float scale) {
+  if (!font || !font->texture || (gr_current & get_alphamask()) == 0) return 0;
+  if (font->texture->pixel_bytes != 1) {
+    printf("gr_text_scaled: font has wrong format\n");
+    return 0;
+  }
+  if (scale > 0.99f && scale < 1.01f) {
+    gr_text(font, x, y, s, bold);
+    return gr_measure(font, s);
+  }
+  bold = bold && (font->texture->height != font->char_height);
+  x += overscan_offset_x;
+  y += overscan_offset_y;
+  const int cw = font->char_width, ch = font->char_height;
+  const int ow = static_cast<int>(std::lround(cw * scale));
+  const int oh = static_cast<int>(std::lround(ch * scale));
+  const int start_x = x;
+  unsigned char c;
+  while ((c = *s++)) {
+    if (c < ' ' || c > '~') c = '?';
+    const uint8_t* glyph = font->texture->data() + (c - ' ') * cw +
+                           (bold ? ch * font->texture->row_bytes : 0);
+    for (int oy = 0; oy < oh; ++oy) {
+      for (int ox = 0; ox < ow; ++ox) {
+        float u = (ox + 0.5f) * cw / ow - 0.5f;
+        float v = (oy + 0.5f) * ch / oh - 0.5f;
+        float a = md3::SampleAlphaBilinear(glyph, font->texture->row_bytes, cw, ch, u, v);
+        if (a >= 1.f) BlendCoverage(x + ox, y + oy, static_cast<uint8_t>(a));
+      }
+    }
+    x += ow;
+  }
+  return x - start_x;
 }
 
 void gr_blit(const GRSurface* source, int sx, int sy, int w, int h, int dx, int dy) {

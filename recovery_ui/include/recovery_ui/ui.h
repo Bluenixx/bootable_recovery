@@ -167,6 +167,23 @@ class RecoveryUI {
   virtual void SetBackground(Icon icon) = 0;
   virtual void SetSystemUpdateText(bool security_update) = 0;
 
+  // --- OTA details (shown on the install screen of themed UIs) ---
+
+  // Information about the package being installed. Fields that are empty / zero keep their
+  // previous value, so callers can report what they know at different points of the install.
+  struct UpdateInfo {
+    std::string package_name;    // File name of the package.
+    int64_t package_size = 0;    // Size in bytes.
+    std::string ota_type;        // "AB", "BLOCK" or "BRICK", from the package metadata.
+    std::string device;          // pre-device.
+    std::string pre_build;       // pre-build-incremental.
+    std::string post_build;      // post-build-incremental.
+    std::string security_patch;  // post-security-patch-level.
+  };
+  enum class UpdateStage { NONE = 0, VERIFYING = 1, INSTALLING = 2, FINALIZING = 3 };
+  virtual void SetUpdateInfo(const UpdateInfo& /* info */) {}
+  virtual void SetUpdateStage(UpdateStage /* stage */) {}
+
   // --- progress indicator ---
   virtual void SetProgressType(ProgressType determinate) = 0;
 

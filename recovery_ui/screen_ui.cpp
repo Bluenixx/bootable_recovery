@@ -51,6 +51,7 @@
 #include "minui/minui.h"
 #include "otautil/paths.h"
 #include "recovery_ui/device.h"
+#include "recovery_ui/md3_ui.h"
 #include "recovery_ui/ui.h"
 
 enum DirectRenderManager {
@@ -128,6 +129,7 @@ int TextMenu::Select(int sel) {
   int count = ItemsCount();
 
   int min = IsMain() ? 0 : -1; // -1 is back arrow
+  const int old_selection = selection_;
 
   if (sel < min) {
     selection_ = wrappable() ? count - 1 : min;
@@ -145,7 +147,18 @@ int TextMenu::Select(int sel) {
     }
   }
 
+  if (selection_ != old_selection) {
+    prev_selection_ = old_selection;
+    selection_changed_at_ = now();
+  }
+
   return selection_;
+}
+
+constexpr double kSelectionAnimationSeconds = 0.32;
+
+bool TextMenu::IsAnimating() const {
+  return selection_changed_at_ > 0 && now() - selection_changed_at_ < kSelectionAnimationSeconds;
 }
 
 int TextMenu::SelectVisible(int relative_sel) {
@@ -189,22 +202,40 @@ int TextMenu::DrawItems(int x, int y, int screen_width, bool long_press) const {
   int padding = draw_funcs_.MenuItemPadding();
   int spacing = draw_funcs_.MenuItemSpacing();
 
-  draw_funcs_.SetColor(UIElement::MENU);
   offset += horizontal_rule_height + 4;
 
   int item_container_offset = offset; // store it for drawing scrollbar on most top
 
+  const int bar_height = padding + char_height_ + padding;
+  const int pitch = bar_height + spacing;
+  const int bar_x = padding + x;
+  const int bar_width = screen_width - (padding + x) * 2;
+  const int first_y = y + item_container_offset;
+  const int sel = selection();
+
+  // Pass 1: a tonal tile behind every visible item.
+  draw_funcs_.SetColor(UIElement::MENU_BG);
   for (size_t i = MenuStart(); i < MenuEnd(); ++i) {
-    const auto selected = i == selection();
+    draw_funcs_.DrawHighlightBar(bar_x, first_y + static_cast<int>(i - MenuStart()) * pitch,
+                                 bar_width, bar_height);
+  }
 
-    // Draw the highlight bar.
-    draw_funcs_.SetColor(long_press ? UIElement::MENU_SEL_BG_ACTIVE
-                         : selected ? UIElement::MENU_SEL_BG
-                                    : UIElement::MENU_BG);
+  // Pass 2: the selection pill, sliding (with a little spring) from the previous item.
+  if (sel >= 0 && static_cast<size_t>(sel) >= MenuStart() && static_cast<size_t>(sel) < MenuEnd()) {
+    float pill_y = static_cast<float>(first_y + (sel - static_cast<int>(MenuStart())) * pitch);
+    if (prev_selection_ >= 0 && static_cast<size_t>(prev_selection_) >= MenuStart() &&
+        static_cast<size_t>(prev_selection_) < MenuEnd() && IsAnimating()) {
+      float from = static_cast<float>(first_y + (prev_selection_ - static_cast<int>(MenuStart())) * pitch);
+      float t = static_cast<float>((now() - selection_changed_at_) / kSelectionAnimationSeconds);
+      pill_y = md3::Lerp(from, pill_y, md3::EaseOutBack(t));
+    }
+    draw_funcs_.SetColor(long_press ? UIElement::MENU_SEL_BG_ACTIVE : UIElement::MENU_SEL_BG);
+    draw_funcs_.DrawMenuSelection(bar_x, static_cast<int>(pill_y + 0.5f), bar_width, bar_height);
+  }
 
-    int bar_height = padding + char_height_ + padding;
-    draw_funcs_.DrawHighlightBar(padding + x, y + offset, screen_width - (padding + x) * 2, bar_height);
-
+  // Pass 3: the labels.
+  for (size_t i = MenuStart(); i < MenuEnd(); ++i) {
+    const auto selected = static_cast<int>(i) == sel;
     draw_funcs_.SetColor(selected ? UIElement::MENU_SEL_FG : UIElement::MENU);
     offset += draw_funcs_.DrawTextLine(padding * 2 + x, y + offset, TextItem(i), false /* bold */);
     offset += spacing;
@@ -214,10 +245,10 @@ int TextMenu::DrawItems(int x, int y, int screen_width, bool long_press) const {
   std::string unused;
   if (ItemsOverflow(&unused)) {
     int container_height = max_display_items_ * (2 * padding + char_height_ + spacing);
-    int bar_height = container_height / (text_items_.size() - max_display_items_ + 1);
-    int start_y = y + item_container_offset + bar_height * menu_start_;
+    int bar_h = container_height / (text_items_.size() - max_display_items_ + 1);
+    int start_y = y + item_container_offset + bar_h * menu_start_;
     draw_funcs_.SetColor(UIElement::SCROLLBAR);
-    draw_funcs_.DrawScrollBar(start_y, bar_height);
+    draw_funcs_.DrawScrollBar(start_y, bar_h);
   }
 
   return offset;
@@ -506,7 +537,7 @@ int ScreenRecoveryUI::GetProgressBaseline() const {
 // Should only be called with updateMutex locked.
 void ScreenRecoveryUI::draw_background_locked() {
   pagesIdentical = false;
-  gr_color(0, 0, 0, 255);
+  md3::SetColor(md3::palette::kSurface);
   gr_clear();
   if (current_icon_ != NONE) {
     if (max_stage != -1) {
@@ -524,7 +555,7 @@ void ScreenRecoveryUI::draw_background_locked() {
     const auto& text_surface = GetCurrentText();
     int text_x = (ScreenWidth() - gr_get_width(text_surface)) / 2;
     int text_y = GetTextBaseline();
-    gr_color(255, 255, 255, 255);
+    md3::SetColor(md3::palette::kOnSurface);
     DrawTextIcon(text_x, text_y, text_surface);
   }
 }
@@ -551,7 +582,7 @@ void ScreenRecoveryUI::draw_foreground_locked() {
     int progress_y = GetProgressBaseline();
 
     // Erase behind the progress bar (in case this was a progress-only update)
-    gr_color(0, 0, 0, 255);
+    md3::SetColor(md3::palette::kSurface);
     DrawFill(progress_x, progress_y, width, height);
 
     if (progressBarType == DETERMINATE) {
@@ -581,46 +612,41 @@ void ScreenRecoveryUI::draw_foreground_locked() {
   }
 }
 
-/* recovery dark:  #7C4DFF
-   recovery light: #F890FF
-   fastbootd dark: #E65100
-   fastboot light: #FDD835 */
+// Material 3 Expressive dark scheme (see recovery_ui/md3_ui.h for the palette).
 void ScreenRecoveryUI::SetColor(UIElement e) const {
+  using namespace md3::palette;
   switch (e) {
     case UIElement::BATTERY_LOW:
-      if (fastbootd_logo_enabled_)
-        gr_color(0xfd, 0x35, 0x35, 255);
-      else
-        gr_color(0xc7, 0x15, 0x85, 255);
+      md3::SetColor(kError);
       break;
     case UIElement::INFO:
     case UIElement::HEADER:
-      gr_color(0xff, 0xff, 0xff, 255);
-      break;
     case UIElement::MENU:
-      gr_color(0xd8, 0xd8, 0xd8, 255);
+      md3::SetColor(kOnSurface);
       break;
     case UIElement::MENU_BG:
-      gr_color(0x30, 0x30, 0x30, 255);
+      md3::SetColor(kSurfaceContainer);
       break;
     case UIElement::MENU_SEL_BG:
+      md3::SetColor(kPrimary);
+      break;
     case UIElement::SCROLLBAR:
-      gr_color(0xff, 0xff, 0xff, 255);
+      md3::SetColor(kOutline);
       break;
     case UIElement::MENU_SEL_BG_ACTIVE:
-      gr_color(0xb0, 0xb0, 0xb0, 255);
+      md3::SetColor(kTertiary);
       break;
     case UIElement::MENU_SEL_FG:
-      gr_color(0, 0, 0, 255);
+      md3::SetColor(kOnPrimary);
       break;
     case UIElement::LOG:
-      gr_color(196, 196, 196, 255);
+      md3::SetColor(kOnSurfaceVariant);
       break;
     case UIElement::TEXT_FILL:
       gr_color(0, 0, 0, 160);
       break;
     default:
-      gr_color(255, 255, 255, 255);
+      md3::SetColor(kOnSurface);
       break;
   }
 }
@@ -728,13 +754,20 @@ int ScreenRecoveryUI::DrawHorizontalRule(int y) const {
 void ScreenRecoveryUI::DrawHighlightBar(int x, int y, int width, int height) const {
   if (y + height > ScreenHeight())
     height = ScreenHeight() - y;
-  gr_fill(x, y, x + width, y + height);
+  // Tonal tile with an expressive (not fully round) corner.
+  gr_fill_round(x, y, x + width, y + height, PixelsFromDp(12));
+}
+
+void ScreenRecoveryUI::DrawMenuSelection(int x, int y, int width, int height) const {
+  if (y + height > ScreenHeight())
+    height = ScreenHeight() - y;
+  gr_fill_round(x, y, x + width, y + height, height / 2);
 }
 
 void ScreenRecoveryUI::DrawScrollBar(int y, int height) const {
-  int x = ScreenWidth() - margin_width_;
-  int width = 8;
-  gr_fill(x - width, y, x, y + height);
+  int x = ScreenWidth() - margin_width_ - PixelsFromDp(6);
+  int width = std::max(3, PixelsFromDp(4));
+  gr_fill_round(x - width, y, x, y + height, width / 2);
 }
 
 void ScreenRecoveryUI::DrawFill(int x, int y, int w, int h) const {
@@ -809,13 +842,17 @@ std::vector<std::string> ScreenRecoveryUI::GetMenuHelpMessage() const {
 // Redraws everything on the screen. Does not flip pages. Should only be called with updateMutex
 // locked.
 void ScreenRecoveryUI::draw_screen_locked() {
+  if (IsInstallScreen()) {
+    draw_install_screen_locked();
+    return;
+  }
   if (!show_text) {
     draw_background_locked();
     draw_foreground_locked();
     return;
   }
 
-  gr_color(0, 0, 0, 255);
+  md3::SetColor(md3::palette::kSurface);
   gr_clear();
 
   draw_menu_and_text_buffer_locked(GetMenuHelpMessage());
@@ -874,60 +911,91 @@ void ScreenRecoveryUI::draw_menu_and_text_buffer_locked(
   }
 }
 
-// Draws the battery capacity on the screen. Should only be called with updateMutex locked.
+// Draws the battery chip on the screen. Should only be called with updateMutex locked.
 void ScreenRecoveryUI::draw_battery_capacity_locked() {
-  int x;
-  int y = margin_height_ + gr_get_height(lineage_logo_.get());
-  int icon_x, icon_y, icon_h, icon_w;
+  if (is_battery_less || !menu_) return;
+  md3::Metrics m;
+  m.width = ScreenWidth();
+  m.height = ScreenHeight();
+  m.dp = density_;
+  m.margin_w = margin_width_;
+  m.margin_h = margin_height_;
+  m.char_w = char_width_;
+  m.char_h = char_height_;
+  md3::DrawBatteryChip(m, ScreenWidth() - margin_width_ - PixelsFromDp(16),
+                       margin_height_ + PixelsFromDp(14), batt_capacity_, charging_);
+}
 
-  if (is_battery_less) return;
+bool ScreenRecoveryUI::IsInstallScreen() const {
+  return !show_text && (current_icon_ == INSTALLING_UPDATE || current_icon_ == ERASING);
+}
 
-  // Battery status
-  std::string batt_capacity = std::to_string(batt_capacity_) + '%';
+// Draws the animated OTA / erase screen. Should only be called with updateMutex locked.
+void ScreenRecoveryUI::draw_install_screen_locked() {
+  pagesIdentical = false;
+  md3::Metrics m;
+  m.width = ScreenWidth();
+  m.height = ScreenHeight();
+  m.dp = density_;
+  m.margin_w = margin_width_;
+  m.margin_h = margin_height_;
+  m.char_w = char_width_;
+  m.char_h = char_height_;
 
-  if (charging_)
-    batt_capacity.push_back('+');
-  else if (batt_capacity.back() == '+')
-    batt_capacity.pop_back();
-
-  if (menu_) {
-    // Battery icon
-    x = (ScreenWidth() - margin_width_ * 2 - kMenuIndent) - char_width_;
-
-    SetColor(UIElement::INFO);
-
-    // Top
-    icon_x = x + char_width_ / 3;
-    icon_y = y;
-    icon_w = char_width_ / 3;
-    icon_h = char_height_ / 12;
-    gr_fill(icon_x, icon_y, icon_x + icon_w, icon_y + icon_h);
-
-    // Main rect
-    icon_x = x;
-    icon_y = y + icon_h;
-    icon_w = char_width_;
-    icon_h = char_height_ - (char_height_ / 12);
-    gr_fill(icon_x, icon_y, icon_x + icon_w, icon_y + icon_h);
-
-    // Capacity
-    if (batt_capacity_ <= 15) SetColor(UIElement::BATTERY_LOW);
-    icon_x = x + char_width_ / 6;
-    icon_y = y + char_height_ / 12;
-    icon_w = char_width_ - (2 * char_width_ / 6);
-    icon_h = char_height_ - (3 * char_height_ / 12);
-    int cap_h = icon_h * batt_capacity_ / 100;
-    gr_fill(icon_x, icon_y + icon_h - cap_h, icon_x + icon_w, icon_y + icon_h);
-    gr_color(0, 0, 0, 255);
-    gr_fill(icon_x, icon_y, icon_x + icon_w, icon_y + icon_h - cap_h);
-
-    x -= char_width_;  // Separator
-
-    // Battery text
-    SetColor(UIElement::INFO);
-    x -= batt_capacity.size() * char_width_;
-    DrawTextLine(x, icon_y, batt_capacity.c_str(), false);
+  md3::InstallScreenState st;
+  st.erasing = current_icon_ == ERASING;
+  st.info.package_name = update_info_.package_name;
+  st.info.package_size = update_info_.package_size;
+  st.info.ota_type = update_info_.ota_type;
+  st.info.device = update_info_.device;
+  st.info.pre_build = update_info_.pre_build;
+  st.info.post_build = update_info_.post_build;
+  st.info.security_patch = update_info_.security_patch;
+  st.determinate = progressBarType == DETERMINATE;
+  st.progress = std::min(1.0f, std::max(0.0f, progressScopeStart + progress * progressScopeSize));
+  const double t = now();
+  st.anim_s = t - ui_start_time_;
+  st.elapsed_s = install_start_time_ > 0 ? t - install_start_time_ : 0.0;
+  st.status_line = status_line_;
+  st.battery = batt_capacity_;
+  st.battery_present = !is_battery_less;
+  st.charging = charging_;
+  st.wordmark = brand_wordmark_.get();
+  switch (update_stage_) {
+    case UpdateStage::VERIFYING:
+      st.stage = md3::OtaStage::VERIFYING;
+      break;
+    case UpdateStage::INSTALLING:
+      st.stage = st.progress >= 0.97f ? md3::OtaStage::FINALIZING : md3::OtaStage::INSTALLING;
+      break;
+    case UpdateStage::FINALIZING:
+      st.stage = md3::OtaStage::FINALIZING;
+      break;
+    default:
+      st.stage = md3::OtaStage::NONE;
+      break;
   }
+  md3::DrawInstallScreen(m, st);
+}
+
+void ScreenRecoveryUI::SetUpdateInfo(const UpdateInfo& info) {
+  std::lock_guard<std::mutex> lg(updateMutex);
+  if (!info.package_name.empty()) update_info_.package_name = info.package_name;
+  if (info.package_size > 0) update_info_.package_size = info.package_size;
+  if (!info.ota_type.empty()) update_info_.ota_type = info.ota_type;
+  if (!info.device.empty()) update_info_.device = info.device;
+  if (!info.pre_build.empty()) update_info_.pre_build = info.pre_build;
+  if (!info.post_build.empty()) update_info_.post_build = info.post_build;
+  if (!info.security_patch.empty()) update_info_.security_patch = info.security_patch;
+  if (IsInstallScreen()) update_screen_locked();
+}
+
+void ScreenRecoveryUI::SetUpdateStage(UpdateStage stage) {
+  std::lock_guard<std::mutex> lg(updateMutex);
+  if (stage == update_stage_) return;
+  update_stage_ = stage;
+  if (install_start_time_ <= 0 && stage != UpdateStage::NONE) install_start_time_ = now();
+  if (IsInstallScreen()) update_screen_locked();
 }
 
 // Redraw everything on the screen and flip the screen (make it visible).
@@ -940,7 +1008,9 @@ void ScreenRecoveryUI::update_screen_locked() {
 // Updates only the progress bar, if possible, otherwise redraws the screen.
 // Should only be called with updateMutex locked.
 void ScreenRecoveryUI::update_progress_locked() {
-  if (show_text || !pagesIdentical) {
+  if (IsInstallScreen()) {
+    draw_install_screen_locked();  // Animated: every frame is a full redraw.
+  } else if (show_text || !pagesIdentical) {
     draw_screen_locked();  // Must redraw the whole screen
     pagesIdentical = true;
   } else {
@@ -1032,6 +1102,11 @@ void ScreenRecoveryUI::ProgressThreadLoop() {
           current_frame_ = (current_frame_ + 1) % loop_frames_.size();
         }
 
+        redraw = true;
+      }
+
+      // keep redrawing while the menu selection pill is sliding
+      if (show_text && menu_ && menu_->IsAnimating()) {
         redraw = true;
       }
 
@@ -1185,6 +1260,14 @@ bool ScreenRecoveryUI::Init(const std::string& locale) {
   no_command_text_ = LoadLocalizedBitmap("no_command_text");
   error_text_ = LoadLocalizedBitmap("error_text");
 
+  ui_start_time_ = now();
+  {
+    GRSurface* wordmark = nullptr;
+    if (res_create_alpha_surface("brand_wordmark", &wordmark) == 0) {
+      brand_wordmark_.reset(wordmark);
+    }
+  }
+
   back_icon_ = LoadBitmap("ic_back");
   back_icon_sel_ = LoadBitmap("ic_back_sel");
   if (android::base::GetBoolProperty("ro.boot.dynamic_partitions", false) ||
@@ -1264,6 +1347,10 @@ void ScreenRecoveryUI::LoadAnimation() {
 void ScreenRecoveryUI::SetBackground(Icon icon) {
   std::lock_guard<std::mutex> lg(updateMutex);
 
+  if ((icon == INSTALLING_UPDATE || icon == ERASING) && icon != current_icon_) {
+    install_start_time_ = now();
+    status_line_.clear();
+  }
   current_icon_ = icon;
   update_screen_locked();
 }
@@ -1320,6 +1407,13 @@ void ScreenRecoveryUI::PrintV(const char* fmt, bool copy_to_stdout, va_list ap) 
   }
 
   std::lock_guard<std::mutex> lg(updateMutex);
+  {
+    // Keep the last non-empty line for the install screen.
+    std::string trimmed = android::base::Trim(str);
+    size_t nl = trimmed.find_last_of('\n');
+    if (nl != std::string::npos) trimmed = android::base::Trim(trimmed.substr(nl + 1));
+    if (!trimmed.empty()) status_line_ = trimmed;
+  }
   if (text_rows_ > 0 && text_cols_ > 0) {
     for (const char* ptr = str.c_str(); *ptr != '\0'; ++ptr) {
       if (*ptr == '\n' || text_col_ >= text_cols_) {

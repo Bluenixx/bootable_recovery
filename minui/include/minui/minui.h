@@ -28,6 +28,8 @@
 #include <android-base/macros.h>
 #include <android-base/unique_fd.h>
 
+#include "minui/md3_shapes.h"
+
 //
 // Graphics.
 //
@@ -141,6 +143,15 @@ bool gr_has_multiple_connectors();
 void gr_clear();
 void gr_color(unsigned char r, unsigned char g, unsigned char b, unsigned char a);
 void gr_fill(int x1, int y1, int x2, int y2);
+// Anti-aliased rounded rectangle covering [x1, x2) x [y1, y2); |radius| is clamped to half the
+// shorter side, so radius >= min(w, h) / 2 gives a pill.
+void gr_fill_round(int x1, int y1, int x2, int y2, int radius);
+void gr_fill_circle(int cx, int cy, int radius);
+// Anti-aliased radial shape, see GRShapeHarmonic in minui/md3_shapes.h.
+void gr_fill_shape(int cx, int cy, int radius, const GRShapeHarmonic* harmonics, int count);
+// Horizontal wavy stroke with round caps (wavy progress indicator).
+void gr_fill_wave(int x1, int x2, int cy, float amplitude, float wavelength, float phase,
+                  int thickness);
 
 void gr_texticon(int x, int y, const GRSurface* icon);
 
@@ -148,6 +159,10 @@ const GRFont* gr_sys_font();
 const GRFont* gr_menu_font();
 int gr_init_font(const char* name, GRFont** dest);
 void gr_text(const GRFont* font, int x, int y, const char* s, bool bold);
+// Same as gr_text() but smoothly scaled by |scale| (bilinear). Returns the advance in pixels.
+int gr_text_scaled(const GRFont* font, int x, int y, const char* s, bool bold, float scale);
+// Width in pixels of |s| drawn with gr_text_scaled().
+int gr_measure_scaled(const GRFont* font, const char* s, float scale);
 // Returns -1 if font is nullptr.
 int gr_measure(const GRFont* font, const char* s);
 // Returns -1 if font is nullptr.

@@ -56,6 +56,12 @@ class DrawInterface {
   // Draws a highlight bar at (x, y) - (x + width, y + height).
   virtual void DrawHighlightBar(int x, int y, int width, int height) const = 0;
 
+  // Draws the selection indicator behind the selected menu item. Themes can draw a different
+  // shape than the plain highlight bar; the default keeps the old behavior.
+  virtual void DrawMenuSelection(int x, int y, int width, int height) const {
+    DrawHighlightBar(x, y, width, height);
+  }
+
   // Draws a horizontal rule at Y. Returns the offset it should be moving along Y-axis.
   virtual int DrawHorizontalRule(int y) const = 0;
 
@@ -109,6 +115,10 @@ class Menu {
   // Iterates over the menu items and displays each of them at offset x, y.
   virtual int DrawItems(int x, int y, int screen_width, bool long_press) const = 0;
   virtual size_t ItemsCount() const = 0;
+  // True while the menu is playing a selection animation and needs to be redrawn.
+  virtual bool IsAnimating() const {
+    return false;
+  }
   virtual bool IsMain() const = 0;
   virtual void SetMenuHeight(int height) = 0;
 
@@ -135,6 +145,7 @@ class TextMenu : public Menu {
   int DrawHeader(int x, int y) const override;
   int DrawItems(int x, int y, int screen_width, bool long_press) const override;
   size_t ItemsCount() const override;
+  bool IsAnimating() const override;
 
   bool IsMain() const override {
     // Main menus have no headers
@@ -197,6 +208,10 @@ class TextMenu : public Menu {
 
   // Height in pixels of each character.
   int char_height_;
+
+  // Previous selection and the time it changed, used to slide the selection pill.
+  int prev_selection_ = -1;
+  double selection_changed_at_ = 0;
 };
 
 // This class uses GRSurface's as the menu header and items.
@@ -247,6 +262,9 @@ class MenuDrawFunctions : public DrawInterface {
   void DrawHighlightBar(int x, int y, int width, int height) const override {
     wrappee_.DrawHighlightBar(x, y, width, height);
   };
+  void DrawMenuSelection(int x, int y, int width, int height) const override {
+    wrappee_.DrawMenuSelection(x, y, width, height);
+  }
   void DrawScrollBar(int y, int height) const override {
     wrappee_.DrawScrollBar(y, height);
   }
@@ -304,6 +322,10 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   void SetProgressType(ProgressType type) override;
   void ShowProgress(float portion, float seconds) override;
   void SetProgress(float fraction) override;
+
+  // OTA details shown on the install screen.
+  void SetUpdateInfo(const UpdateInfo& info) override;
+  void SetUpdateStage(UpdateStage stage) override;
 
   void SetStage(int current, int max) override;
 
@@ -402,6 +424,9 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   // Returns the help message displayed on top of the menu.
   virtual std::vector<std::string> GetMenuHelpMessage() const;
 
+  // True while the animated OTA / erase screen replaces the classic icon + progress bar.
+  bool IsInstallScreen() const;
+  virtual void draw_install_screen_locked();
   virtual void draw_background_locked();
   virtual void draw_battery_capacity_locked();
   virtual void draw_foreground_locked();
@@ -438,6 +463,7 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   // Implementation of the draw functions in DrawInterface.
   void SetColor(UIElement e) const override;
   void DrawHighlightBar(int x, int y, int width, int height) const override;
+  void DrawMenuSelection(int x, int y, int width, int height) const override;
   void DrawScrollBar(int y, int height) const override;
   int DrawHorizontalRule(int y) const override;
   void DrawSurface(const GRSurface* surface, int sx, int sy, int w, int h, int dx,
@@ -484,6 +510,15 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   // current_frame_, or error_icon_.
   Icon current_icon_;
   std::unique_ptr<GRSurface> error_icon_;
+  // Alpha mask of the "bluenixx" wordmark used by the install screen header.
+  std::unique_ptr<GRSurface> brand_wordmark_;
+
+  // State of the OTA screen.
+  UpdateInfo update_info_;
+  UpdateStage update_stage_ = UpdateStage::NONE;
+  double install_start_time_ = 0;
+  double ui_start_time_ = 0;
+  std::string status_line_;
   std::vector<std::unique_ptr<GRSurface>> intro_frames_;
   std::vector<std::unique_ptr<GRSurface>> loop_frames_;
   size_t current_frame_;

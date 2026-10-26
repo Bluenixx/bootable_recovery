@@ -407,6 +407,17 @@ static InstallResult TryUpdateBinary(Package* package, bool* wipe_cache,
   auto zip = package->GetZipArchiveHandle();
   bool has_metadata = ReadMetadataFromPackage(zip, &metadata);
 
+  if (has_metadata) {
+    // Tell the UI what this package is, so themed install screens can show it.
+    RecoveryUI::UpdateInfo info;
+    info.ota_type = get_value(metadata, "ota-type");
+    info.device = android::base::Split(get_value(metadata, "pre-device"), ",")[0];
+    info.pre_build = get_value(metadata, "pre-build-incremental");
+    info.post_build = get_value(metadata, "post-build-incremental");
+    info.security_patch = get_value(metadata, "post-security-patch-level");
+    ui->SetUpdateInfo(info);
+  }
+
   const bool package_is_ab = has_metadata && get_value(metadata, "ota-type") == OtaTypeToString(OtaType::AB);
   if (package_is_ab && !IsCancelUpdateSafe(device)) {
     if (!IsCancelUpdateSafe(device)) {
@@ -662,6 +673,7 @@ static InstallResult VerifyAndInstallPackage(Package* package, bool* wipe_cache,
   ui->ShowProgress(VERIFICATION_PROGRESS_FRACTION, VERIFICATION_PROGRESS_TIME);
 
   // Verify package.
+  ui->SetUpdateStage(RecoveryUI::UpdateStage::VERIFYING);
   if (!verify_package(package, ui)) {
     log_buffer->push_back(android::base::StringPrintf("error: %d", kZipVerificationFailure));
     if (!ui->IsTextVisible() || !ask_to_continue_unverified(ui->GetDevice())) {
@@ -670,6 +682,7 @@ static InstallResult VerifyAndInstallPackage(Package* package, bool* wipe_cache,
   }
 
   // Verify and install the contents of the package.
+  ui->SetUpdateStage(RecoveryUI::UpdateStage::INSTALLING);
   ui->Print("Installing update...\n");
   if (retry_count > 0) {
     ui->Print("Retry attempt: %d\n", retry_count);
@@ -698,6 +711,15 @@ InstallResult InstallPackage(Package* package, const std::string_view package_id
 
   ui->Print("Finding update package...\n");
   LOG(INFO) << "Update package id: " << package_id;
+  {
+    RecoveryUI::UpdateInfo info;
+    std::string name(package_id);
+    if (!name.empty() && name[0] == '@') name.erase(0, 1);  // Block map files are prefixed by '@'.
+    size_t slash = name.find_last_of('/');
+    info.package_name = slash == std::string::npos ? name : name.substr(slash + 1);
+    if (package) info.package_size = static_cast<int64_t>(package->GetPackageSize());
+    ui->SetUpdateInfo(info);
+  }
   if (!package) {
     log_buffer.push_back(android::base::StringPrintf("error: %d", kMapFileFailure));
     result = INSTALL_CORRUPT;
